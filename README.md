@@ -1,3 +1,5 @@
+[![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/netatmo-tt-system)](https://artifacthub.io/packages/search?repo=netatmo-tt-system)
+
 # Netatmo Integration Module
 
 This module integrates with Netatmo devices to retrieve data and control them via the Netatmo API. It publishes data to an MQTT broker and provides a REST API for interacting with the service.
