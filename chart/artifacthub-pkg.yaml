@@ -1,0 +1,12 @@
+name: netatmo-tt-system
+version: 0.1.0
+description: Netatmo True Temperature microservice for MQTT + Netatmo private API
+keywords:
+  - netatmo
+  - true-temperature
+  - mqtt
+  - kubernetes
+home: https://github.com/b-iurea/netatmo-tt-system
+maintainers:
+  - name: Bogdan Iurea
+    email: b.iurea94@gmail.com
