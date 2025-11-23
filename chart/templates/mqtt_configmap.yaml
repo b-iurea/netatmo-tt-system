@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "netatmo-tt-system.fullname" . }}-mqtt-config
+  namespace: {{ default "netatmo-system" .Values.namespaceOverride }}
+data:
+  mosquitto.conf: |
+    listener {{ .Values.mqtt.service.port }}
+    allow_anonymous {{ ternary "true" "false" .Values.mqtt.config.allow_anonymous }}
+    persistence {{ ternary "true" "false" .Values.mqtt.config.persistence }}

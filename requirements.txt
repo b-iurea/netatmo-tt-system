@@ -1,0 +1,8 @@
+requests
+urllib3
+paho.mqtt
+apscheduler
+jinja2
+fastapi
+uvicorn[standard]
+lxml

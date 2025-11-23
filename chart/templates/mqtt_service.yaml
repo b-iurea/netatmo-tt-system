@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "netatmo-tt-system.fullname" . }}-mqtt
+  namespace: {{ default "netatmo-system" .Values.namespaceOverride }}
+spec:
+  type: {{ .Values.mqtt.service.type }}
+  ports:
+  - port: {{ .Values.mqtt.service.port }}
+    protocol: TCP
+    name: mqtt
+  selector:
+    app: {{ include "netatmo-tt-system.name" . }}-mqtt

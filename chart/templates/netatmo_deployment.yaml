@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "netatmo-tt-system.fullname" . }}
+  namespace: {{ default "netatmo-system" .Values.namespaceOverride }}
+  annotations:
+    rollme: {{ randAlphaNum 8 | quote }}
+spec:
+  replicas: {{ .Values.netatmo.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ include "netatmo-tt-system.name" . }}
+  template:
+    metadata:
+      labels:
+        app: {{ include "netatmo-tt-system.name" . }}
+    spec:
+      containers:
+      - name: netatmo-api
+        image: "{{ .Values.netatmo.image.repository }}:{{ .Values.netatmo.image.tag }}"
+        imagePullPolicy: {{ .Values.netatmo.image.pullPolicy }}
+
+        envFrom:
+          - configMapRef:
+              name: {{ include "netatmo-tt-system.fullname" . }}-config
+          - secretRef:
+              name: {{ include "netatmo-tt-system.fullname" . }}-secret
+
+        ports:
+        - name: http
+          containerPort: {{ .Values.netatmo.service.port }}
+
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.netatmo.service.port }}
+          initialDelaySeconds: 5
+          periodSeconds: 10
+
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.netatmo.service.port }}
+          initialDelaySeconds: 15
+          periodSeconds: 20

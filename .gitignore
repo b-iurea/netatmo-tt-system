@@ -1,0 +1,12 @@
+.venv
+.vscode
+*.code-workspace
+**/*.ini
+**/*.pyc
+**/*.log
+**/*.things
+**/*.items
+**/*.sitemap
+tmp/**
+**/__pycache__ 
+src/netatmo_api/tmp/

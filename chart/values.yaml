@@ -1,0 +1,52 @@
+namespaceOverride: ""
+
+netatmo:
+  image:
+    repository: bogdaniurea/netatmo-tt-system
+    tag: "0.1.0"
+    pullPolicy: Always
+
+  replicaCount: 1
+
+  service:
+    port: 8000
+    type: ClusterIP
+
+mqtt:
+  enabled: true
+  image:
+    repository: eclipse-mosquitto
+    tag: "2.0.22"
+    pullPolicy: IfNotPresent
+
+  service:
+    port: 1883
+    type: ClusterIP
+
+  config:
+    allow_anonymous: true
+    persistence: false
+
+env:
+  mqtt:
+    topic: "netatmo/truetemperature"
+
+  http:
+    host: "0.0.0.0"
+
+  global:
+    frequency: "30"
+
+  logging:
+    severity: "WARNING"
+    filename: "netatmo.log"
+
+secretEnv:
+  client_id: 
+  client_secret: 
+  username:
+  password:
+  home_id:
+  refresh_token:
+  redirect_uri: https://api.netatmo.com/oauth2/redirect
+  scopes: read_thermostat write_thermostat read_smarther write_smarther

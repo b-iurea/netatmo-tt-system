@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "netatmo-tt-system.fullname" . }}-config
+  namespace: {{ default "netatmo-system" .Values.namespaceOverride }}
+data:
+  NETATMO_MQTT_BROKER: "{{ include "netatmo-tt-system.fullname" . }}-mqtt.{{ default "netatmo-system" .Values.namespaceOverride }}.svc.cluster.local"
+  NETATMO_MQTT_PORT: "{{ .Values.mqtt.service.port }}"
+  NETATMO_MQTT_TOPIC: "{{ .Values.env.mqtt.topic }}"
+
+  NETATMO_HTTP_HOST: "{{ .Values.env.http.host }}"
+  NETATMO_HTTP_PORT: "{{ .Values.netatmo.service.port }}"
+
+  NETATMO_GLOBAL_FREQUENCY: "{{ .Values.env.global.frequency }}"
+
+  NETATMO_LOG_SEVERITY: "{{ .Values.env.logging.severity }}"
+  NETATMO_LOG_FILENAME: "{{ .Values.env.logging.filename }}"
