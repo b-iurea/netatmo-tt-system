@@ -1,0 +1,49 @@
+# Artifact Hub package metadata file
+version: 0.1.0
+name: netatmo-tt-system
+displayName: Netatmo TT System
+createdAt: "2025-11-23T00:00:00Z"
+
+category: monitoring-logging
+
+description: >
+  A Kubernetes Helm chart for deploying the Netatmo True Temperature System.
+  Includes the Netatmo API processor using image 'bogdaniurea/netatmo-tt-system:0.2.0'
+  and an optional embedded MQTT broker based on 'eclipse-mosquitto:2.0.22'.
+  The chart provides a complete environment for ingesting Netatmo thermostat data,
+  processing it, and publishing updates to MQTT topics such as 'netatmo/truetemperature'.
+
+license: GPL-3.0
+homeURL: https://github.com/b-iurea/netatmo-tt-system
+appVersion: "0.2.0"
+
+containersImages:
+  - name: netatmo-app
+    image: bogdaniurea/netatmo-tt-system:0.2.0
+  - name: mqtt
+    image: eclipse-mosquitto:2.0.22
+
+keywords:
+  - netatmo
+  - mqtt
+  - thermostats
+  - monitoring
+  - kubernetes
+  - helm
+
+links:
+  - name: Chart Source Code
+    url: https://github.com/b-iurea/netatmo-tt-system
+  - name: Real Source Code
+    url: https://github.com/redcorjo/netatmo_api
+  - name: Docker Image
+    url: https://hub.docker.com/r/bogdaniurea/netatmo-tt-system
+
+install: |
+  ## Installation
+
+  Add the Helm repository:
+
+  ```bash
+  helm repo add netatmo https://b-iurea.github.io/netatmo-tt-system/
+  helm repo update
