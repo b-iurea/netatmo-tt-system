@@ -193,8 +193,6 @@ python src/netatmo.py --daemon --webserver
 
 This module can also be deployed as a Helm chart. See the `chart/README.md` file for more information.
 
-[![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/netatmo-tt-system)](https://artifacthub.io/packages/search?repo=netatmo-tt-system)
-
 ## OpenHAB Integration
 
 The module can generate OpenHAB configuration files for easy integration with OpenHAB. Use the `-oh` flag to specify the OpenHAB base directory:
