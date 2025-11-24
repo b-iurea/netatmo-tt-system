@@ -16,7 +16,7 @@ Original repository for source code:
 
 ## Usage Examples
 
-![alt text](image.png)
+![alt text](image-1.png)
 
 ### Using the REST API
 
