@@ -8,7 +8,6 @@ import configparser
 import logging
 from lxml import html
 import pickle
-import time
 
 logging.basicConfig(level=logging.INFO)
 
@@ -115,37 +114,21 @@ class Netatmo_API():
         return payload
 
     # # TODO: Pending
-    # def get_room_measure(self, room_id, _type, home_id=None, scale=None):
+    # def getroommeasure(self):
     #     endpoint = f"{self.endpoint}/api/getroommeasure"
-    #     unix_time = int(time.time())
     #     parameters = {
     #     }
     #     if self.token == None:
     #         self.get_token()
-    #     if home_id != None:
-    #         parameters["home_id"] = home_id
-    #     elif self.home_id != None:
-    #         parameters["home_id"] = self.home_id
-    #     else:
-    #         parameters["home_id"] = self.get_default_home_id()
-    #     parameters["room_id"] = room_id
-    #     if scale == None:
-    #         parameters["scale"] = unix_time
-    #     parameters["type"] = _type
-            
     #     headers = {
     #         "accept": "application/json",
     #         "Authorization": "Bearer " + self.token
     #     }
     #     response = requests.get(endpoint, params=parameters, headers=headers)
-    #     print("#### DEBUG ####")
-    #     print(endpoint, parameters, headers)
-    #     print("###############")
     #     if response.status_code == 200:
     #         payload = json.loads(response.content)
     #     else:
     #         payload = {"status": "failed"}
-    #         print(response)
     #     return payload
 
     # # TODO: Pending

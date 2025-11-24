@@ -3,7 +3,7 @@ namespaceOverride: ""
 netatmo:
   image:
     repository: bogdaniurea/netatmo-tt-system
-    tag: "0.2.0"
+    tag: "0.1.0"
     pullPolicy: Always
 
   replicaCount: 1

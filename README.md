@@ -16,6 +16,8 @@ Original repository for source code:
 
 ## Usage Examples
 
+![alt text](image.png)
+
 ### Using the REST API
 
 The module exposes a REST API built with FastAPI. Here are some examples of how to use it.

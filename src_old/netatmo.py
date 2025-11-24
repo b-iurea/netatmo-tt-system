@@ -298,19 +298,6 @@ class MyNetatmo():
         netatmo = self.get_netatmo_session()
         response = netatmo.set_truetemperature(room_id, corrected_temperature, home_id)
         return response
-    
-    def home_status(self, home_id: str = None, device_list: list = None):
-        logger.info(f"Get the home status data")
-        netatmo = self.get_netatmo_session()
-        response = netatmo.homestatus(home_id, device_list)
-        return response
-    
-    # TODO     
-    # def roommeasure(self, room_id: str, _type: str, home_id: str = None, scale: str = None):
-    #     logger.info(f"Triggered getroommeasure on room_id={room_id} in the current time")
-    #     netatmo = self.get_netatmo_session()
-    #     response = netatmo.get_room_measure(room_id, _type, home_id, scale)
-    #     return response
 
     def create_openhab_template(self, openhab_basedir="/etc/openhab"):
         logger.info("Creating openhab template file")

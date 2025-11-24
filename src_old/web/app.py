@@ -6,7 +6,6 @@ import uvicorn
 import logging
 import os
 
-
 logging.basicConfig(level=logging.INFO)
 
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "prod").lower()
@@ -53,14 +52,6 @@ class MqttMode(str, Enum):
 def health():
     return {"status": "ok"}
 
-@app.get("/homestatus")
-async def get_homestatus():
-    app_config = app.state.config
-    netatmo = app_config["instance"]
-    config = app_config["config"]
-    response = netatmo.home_status()
-    return response
-
 @app.put("/setthermode")
 async def put_seththermode(mode: SetThermMode):
     settherm_mode = mode.value
@@ -77,15 +68,6 @@ async def put_truetemperature(room_id: str, corrected_temperature: float):
     config = app_config["config"]
     response = netatmo.truetemperature(room_id, corrected_temperature)
     return response
-
-# TODO
-# @app.get("/getroommeasure/{room_id}")
-# async def get_roommeasure(room_id: str, _type: str):
-#     app_config = app.state.config
-#     netatmo = app_config["instance"]
-#     config = app_config["config"]
-#     response = netatmo.roommeasure(room_id, _type)
-#     return response
 
 @app.get("/mqtt")
 async def get_mqtt(mode: Optional[MqttMode] = MqttMode.both): 
