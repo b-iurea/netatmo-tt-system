@@ -4,7 +4,7 @@ name: netatmo-tt-system
 displayName: Netatmo TT System
 createdAt: "2025-11-23T00:00:00Z"
 
-category: monitoring-logging
+category: monitoring-logging-
 
 description: >
   A Kubernetes Helm chart for deploying the Netatmo True Temperature System.
