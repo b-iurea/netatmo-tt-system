@@ -3,7 +3,7 @@ namespaceOverride: ""
 netatmo:
   image:
     repository: bogdaniurea/netatmo-tt-system
-    tag: "0.1.0"
+    tag: "0.3.0-dev"
     pullPolicy: Always
 
   replicaCount: 1
@@ -11,6 +11,29 @@ netatmo:
   service:
     port: 8000
     type: ClusterIP
+
+monitor:
+  enabled: true
+  image:
+    repository: bogdaniurea/netatmo-tt-monitor
+    tag: "0.1.0"
+    pullPolicy: Always
+
+  replicaCount: 1
+
+  service:
+    port: 5050
+    type: ClusterIP
+
+  env:
+    sourceBaseUrl: "http://netatmo-tt-system.netatmo-system.svc.cluster.local:8080"
+    checkIntervalMin: 5
+    checkRounds: 6
+    tempDelta: 0.5
+    requestTimeout: 15
+    pollIntervalSeconds: 150
+    valveModuleTypes: "NRV,VALVE"
+    valveActiveKeys: "valve_position,valve,position,open,heating_power_request,valve_level"
 
 mqtt:
   enabled: true

@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "netatmo-tt-system.fullname" . }}-monitor-config
+  namespace: {{ default "netatmo-system" .Values.namespaceOverride }}
+data:
+  # Monitor runtime configuration (can be overridden in values.yaml)
+  SOURCE_BASE_URL: "{{ .Values.monitor.env.sourceBaseUrl | default "" }}"
+  CHECK_INTERVAL_MIN: "{{ .Values.monitor.env.checkIntervalMin | default 5 }}"
+  CHECK_ROUNDS: "{{ .Values.monitor.env.checkRounds | default 6 }}"
+  TEMP_DELTA: "{{ .Values.monitor.env.tempDelta | default 0.5 }}"
+  REQUEST_TIMEOUT: "{{ .Values.monitor.env.requestTimeout | default 15 }}"
+  POLL_INTERVAL_SECONDS: "{{ .Values.monitor.env.pollIntervalSeconds | default 150 }}"
+  VALVE_MODULE_TYPES: "{{ .Values.monitor.env.valveModuleTypes | default "NRV,VALVE" }}"
+  VALVE_ACTIVE_KEYS: "{{ .Values.monitor.env.valveActiveKeys | default "valve_position,valve,position,open,heating_power_request,valve_level" }}"
+  HTTP_HOST: "{{ .Values.env.http.host | default "0.0.0.0" }}"
+  LOGGING_SEVERITY: "{{ .Values.env.logging.severity | default "INFO" }}"

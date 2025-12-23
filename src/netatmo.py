@@ -298,6 +298,12 @@ class MyNetatmo():
         netatmo = self.get_netatmo_session()
         response = netatmo.set_truetemperature(room_id, corrected_temperature, home_id)
         return response
+
+    def homes_data(self, home_id: str = None, device_list: list = None):
+        logger.info(f"Get the home status data")
+        netatmo = self.get_netatmo_session()
+        response = netatmo.homesdata(home_id, device_list)
+        return response
     
     def home_status(self, home_id: str = None, device_list: list = None):
         logger.info(f"Get the home status data")

@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "{{ include "netatmo-tt-system.fullname" . }}-monitor"
+  namespace: {{ default "netatmo-system" .Values.namespaceOverride }}
+  annotations:
+    rollme: {{ randAlphaNum 8 | quote }}
+spec:
+  replicas: {{ .Values.monitor.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ include "netatmo-tt-system.name" . }}
+      component: monitor
+  template:
+    metadata:
+      labels:
+        app: {{ include "netatmo-tt-system.name" . }}
+        component: monitor
+    spec:
+      containers:
+      - name: monitor
+        image: "{{ .Values.monitor.image.repository }}:{{ .Values.monitor.image.tag }}"
+        imagePullPolicy: {{ .Values.monitor.image.pullPolicy }}
+
+        # Load monitor-specific configuration from a dedicated ConfigMap and shared Secret
+        envFrom:
+          - configMapRef:
+              name: {{ include "netatmo-tt-system.fullname" . }}-monitor-config
+
+        ports:
+        - name: http
+          containerPort: 5050
+
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 5050
+          initialDelaySeconds: 5
+          periodSeconds: 10
+
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 5050
+          initialDelaySeconds: 15
+          periodSeconds: 20
+
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 250m
+            memory: 256Mi
+
+      restartPolicy: Always

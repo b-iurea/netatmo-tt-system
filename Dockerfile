@@ -19,5 +19,7 @@ RUN chmod +x /entrypoint.sh
 # Copia il resto del codice
 COPY ./src /app/
 
+RUN chgrp -R 0 /app && chmod -R g+rwx /app
+
 # # Comando di avvio
 ENTRYPOINT ["/entrypoint.sh"]

@@ -53,6 +53,14 @@ class MqttMode(str, Enum):
 def health():
     return {"status": "ok"}
 
+@app.get("/homesdata")
+async def get_homesdata():
+    app_config = app.state.config
+    netatmo = app_config["instance"]
+    config = app_config["config"]
+    response = netatmo.homes_data()
+    return response
+
 @app.get("/homestatus")
 async def get_homestatus():
     app_config = app.state.config
