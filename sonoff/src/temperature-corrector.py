@@ -26,9 +26,9 @@ REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "10"))
 # Maps Netatmo room names to Home Assistant entities
 ROOM_NAME_MAPPINGS = {
     "soggiorno": ("sensor.sonoff_soggiorno_temperatura", "climate.soggiorno"),
-    "ufficio": ("sensor.sonoff_ufficio_temperatura", "climate.ufficio"),
+    "ufficio": ("sensor.sonoff_studio_temperatura", "climate.ufficio"),
     "bagno": ("sensor.sonoff_bagno_temperatura", "climate.bagno"),
-    "camera da letto": ("sensor.sonoff_camera_temperatura", "climate.camera_da_letto"),
+    "camera da letto": ("sensor.sonoff_camera_da_letto_temperatura", "climate.camera_da_letto"),
 }
 
 # Logging
