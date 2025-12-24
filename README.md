@@ -14,9 +14,6 @@ Original repository for source code:
 *   Provides a REST API for setting thermostat mode and true temperature.
 *   Generates OpenHAB configuration files.
 
-## Usage Examples
-
-![alt text](image-1.png)
 
 ### Using the REST API
 
