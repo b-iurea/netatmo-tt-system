@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 import logging
 
 import requests
+from requests.exceptions import ConnectionError, Timeout, RequestException
 from flask import Flask, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -25,6 +26,9 @@ CHECK_INTERVAL_MIN = int(os.getenv("CHECK_INTERVAL_MIN", "5"))
 CHECK_ROUNDS = int(os.getenv("CHECK_ROUNDS", "6"))  # 6 * 5min = 30min
 TEMP_DELTA = float(os.getenv("TEMP_DELTA", "0.5"))
 REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "15"))
+# Retry configuration for connection errors
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
+RETRY_BACKOFF = float(os.getenv("RETRY_BACKOFF", "2.0"))  # exponential backoff factor
 # Poll interval for homestatus (seconds). Default 150s = 2.5 minutes to reduce API calls.
 POLL_INTERVAL_SECONDS = int(float(os.getenv("POLL_INTERVAL_SECONDS", "150")))
 # Valve detection: module types considered valves (comma-separated, uppercase-matched)
@@ -56,7 +60,7 @@ if not logger.handlers:
     h.setFormatter(fmt)
     logger.addHandler(h)
 
-logger.info("monitor starting: SOURCE_BASE_URL=%s CHECK_INTERVAL_MIN=%s CHECK_ROUNDS=%s TEMP_DELTA=%s", SOURCE_BASE_URL, CHECK_INTERVAL_MIN, CHECK_ROUNDS, TEMP_DELTA)
+logger.info("monitor starting: SOURCE_BASE_URL=%s CHECK_INTERVAL_MIN=%s CHECK_ROUNDS=%s TEMP_DELTA=%s MAX_RETRIES=%s RETRY_BACKOFF=%s", SOURCE_BASE_URL, CHECK_INTERVAL_MIN, CHECK_ROUNDS, TEMP_DELTA, MAX_RETRIES, RETRY_BACKOFF)
 
 # Simple deduplicating logger helper to avoid repeating identical info messages
 LAST_LOGS: Dict[str, float] = {}
@@ -84,12 +88,60 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
+def _make_request_with_retry(method: str, url: str, max_retries: int = None, **kwargs) -> requests.Response:
+    """
+    Make HTTP request with automatic retry on connection errors.
+    Implements exponential backoff to avoid overwhelming the service.
+    """
+    import time
+    
+    if max_retries is None:
+        max_retries = MAX_RETRIES
+    
+    last_exception = None
+    for attempt in range(max_retries):
+        try:
+            if method.upper() == "GET":
+                return _session.get(url, **kwargs)
+            elif method.upper() == "PUT":
+                return _session.put(url, **kwargs)
+            elif method.upper() == "POST":
+                return _session.post(url, **kwargs)
+            else:
+                raise ValueError(f"Unsupported HTTP method: {method}")
+        except (ConnectionError, Timeout) as e:
+            last_exception = e
+            if attempt < max_retries - 1:
+                wait_time = RETRY_BACKOFF ** attempt
+                logger.warning(
+                    "Connection error on attempt %d/%d for %s: %s. Retrying in %.1fs...",
+                    attempt + 1, max_retries, url, str(e)[:100], wait_time
+                )
+                time.sleep(wait_time)
+            else:
+                logger.error(
+                    "Connection failed after %d attempts for %s: %s",
+                    max_retries, url, str(e)[:150]
+                )
+        except RequestException as e:
+            # For other request exceptions (like HTTP errors), don't retry
+            logger.error("Request error for %s: %s", url, str(e)[:150])
+            raise
+    
+    # If we exhausted all retries, raise the last exception
+    if last_exception:
+        raise last_exception
+
+
 def fetch_homesdata() -> Dict[str, Any]:
     url = f"{SOURCE_BASE_URL}/homesdata"
     logger.debug("fetch_homesdata: GET %s", url)
-    r = _session.get(url, timeout=REQUEST_TIMEOUT)
     try:
+        r = _make_request_with_retry("GET", url, timeout=REQUEST_TIMEOUT)
         r.raise_for_status()
+    except (ConnectionError, Timeout) as e:
+        logger.error("fetch_homesdata: connection failed after retries: %s", str(e)[:150])
+        raise
     except Exception as e:
         logger.exception("fetch_homesdata error: %s", e)
         raise
@@ -114,9 +166,12 @@ def fetch_homesdata() -> Dict[str, Any]:
 def fetch_homestatus() -> Dict[str, Any]:
     url = f"{SOURCE_BASE_URL}/homestatus"
     logger.debug("fetch_homestatus: GET %s", url)
-    r = _session.get(url, timeout=REQUEST_TIMEOUT)
     try:
+        r = _make_request_with_retry("GET", url, timeout=REQUEST_TIMEOUT)
         r.raise_for_status()
+    except (ConnectionError, Timeout) as e:
+        logger.error("fetch_homestatus: connection failed after retries: %s", str(e)[:150])
+        raise
     except Exception as e:
         logger.exception("fetch_homestatus error: %s", e)
         raise
@@ -219,10 +274,12 @@ def start_monitor_if_needed(room_id: str, initial_temp: float) -> None:
                     url = f"{SOURCE_BASE_URL}/setthermode?mode=away"
                     headers = {"accept": "application/json"}
                     logger.warning("monitor action: room=%s reached attempts=%s -> PUT %s", room_id, m["attempts"], url)
-                    resp = _session.put(url, headers=headers, timeout=REQUEST_TIMEOUT)
+                    resp = _make_request_with_retry("PUT", url, headers=headers, timeout=REQUEST_TIMEOUT)
                     logger.info("PUT setthermode response: status=%s text=%s", resp.status_code, (resp.text or "")[:200])
+                except (ConnectionError, Timeout) as e:
+                    logger.error("setthermode connection failed after retries for room=%s: %s", room_id, str(e)[:150])
                 except Exception as e:
-                    logger.exception("error calling setthermode: %s", e)
+                    logger.exception("error calling setthermode for room=%s: %s", room_id, e)
                 # cleanup
                 STATE["monitors"].pop(room_id, None)
                 try:
@@ -399,8 +456,13 @@ def poll_once():
         logger.debug("poll_once: fetching homestatus")
         homestatus = fetch_homestatus()
         process_homestatus_payload(homestatus)
+    except (ConnectionError, Timeout) as e:
+        # Log connection errors but continue polling - service may recover
+        log_once("poll_connection_error", "warning", 
+                 "poll_once: cannot reach upstream service (will retry on next poll): %s", 
+                 str(e)[:150], window=300)
     except Exception:
-        logger.exception("poll_once: error fetching homestatus")
+        logger.exception("poll_once: unexpected error fetching homestatus")
 
 
 # Start a safe background thread that polls every minute
@@ -411,16 +473,21 @@ def _start_poll_thread():
             logger.info("initial startup: fetching homesdata (only once)")
             homes = fetch_homesdata()
             STATE["rooms_map"] = map_modules_from_homesdata(homes)
+        except (ConnectionError, Timeout) as e:
+            logger.warning("startup: cannot reach upstream service for homesdata (will retry later): %s", str(e)[:150])
+            # Continue with empty rooms_map - it will be populated when service becomes available
         except Exception:
-            logger.exception("startup: error fetching homesdata")
+            logger.exception("startup: unexpected error fetching homesdata")
 
         # initial homestatus poll to detect heating requests immediately
         try:
             logger.info("initial startup: fetching homestatus")
             homestatus = fetch_homestatus()
             process_homestatus_payload(homestatus)
+        except (ConnectionError, Timeout) as e:
+            logger.warning("startup: cannot reach upstream service for homestatus (will retry later): %s", str(e)[:150])
         except Exception:
-            logger.exception("startup: error fetching homestatus")
+            logger.exception("startup: unexpected error fetching homestatus")
 
         # schedule periodic poll (homestatus only)
         scheduler.add_job(poll_once, "interval", seconds=POLL_INTERVAL_SECONDS, id="poll_once", replace_existing=True)

@@ -16,7 +16,7 @@ monitor:
   enabled: true
   image:
     repository: bogdaniurea/netatmo-tt-monitor
-    tag: "0.1.0"
+    tag: "0.3.0"
     pullPolicy: Always
 
   replicaCount: 1
