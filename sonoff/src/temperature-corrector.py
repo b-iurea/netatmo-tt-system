@@ -54,11 +54,18 @@ except Exception:
 # Global room mappings: sensor_id -> (climate_id, room_id, room_name)
 ROOM_MAPPINGS: Dict[str, tuple] = {}
 
+# Retry tracking for failed corrections
+# Structure: {room_id: {"sensor_temp": float, "room_name": str, "failed_at": timestamp, "retry_count": int, "sensor_id": str, "climate_id": str}}
+PENDING_RETRIES: Dict[str, Dict[str, Any]] = {}
+RETRY_INTERVALS = [300, 600, 900]  # 5, 10, 15 minutes in seconds
+
 # Health status tracking
 last_check_time = None
 last_check_success = False
 total_checks = 0
 total_corrections = 0
+total_failed = 0
+total_retried = 0
 
 
 def fetch_homestatus() -> Dict[str, Any]:
@@ -209,21 +216,107 @@ def get_temperature(entity_id: str, is_climate: bool = False) -> Optional[float]
         return None
 
 
-def set_true_temperature(room_id: str, corrected_temperature: float) -> bool:
+def set_true_temperature(room_id: str, corrected_temperature: float, room_name: str = "", is_retry: bool = False) -> bool:
     """Send corrected temperature to Netatmo API"""
     url = f"{NETATMO_API_URL}/truetemperature/{room_id}"
     params = {"corrected_temperature": corrected_temperature}
     headers = {"accept": "application/json"}
     
+    retry_info = f" (retry)" if is_retry else ""
     try:
-        logger.info("Setting true temperature for room %s to %.1f°C", room_id, corrected_temperature)
+        logger.info("Setting true temperature for room %s%s to %.1f°C", room_id, retry_info, corrected_temperature)
         response = requests.put(url, params=params, headers=headers, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
-        logger.info("✓ Successfully set true temperature: status=%s", response.status_code)
+        logger.info("✓ Successfully set true temperature%s: status=%s", retry_info, response.status_code)
         return True
     except requests.exceptions.RequestException as e:
-        logger.error("Failed to set true temperature for room %s: %s", room_id, str(e)[:200])
+        logger.error("Failed to set true temperature for room %s%s: %s", room_id, retry_info, str(e)[:200])
         return False
+
+
+def add_to_retry_queue(room_id: str, sensor_temp: float, room_name: str, sensor_id: str, climate_id: str) -> None:
+    """Add a failed correction to the retry queue"""
+    global total_failed
+    
+    if room_id in PENDING_RETRIES:
+        # Already in queue, increment retry count
+        PENDING_RETRIES[room_id]["retry_count"] += 1
+        PENDING_RETRIES[room_id]["failed_at"] = time.time()
+        PENDING_RETRIES[room_id]["sensor_temp"] = sensor_temp
+        retry_count = PENDING_RETRIES[room_id]["retry_count"]
+        logger.info("Added room '%s' to retry queue (attempt %d)", room_name, retry_count + 1)
+    else:
+        # New entry
+        PENDING_RETRIES[room_id] = {
+            "sensor_temp": sensor_temp,
+            "room_name": room_name,
+            "failed_at": time.time(),
+            "retry_count": 0,
+            "sensor_id": sensor_id,
+            "climate_id": climate_id
+        }
+        logger.info("Added room '%s' to retry queue (first attempt)", room_name)
+        total_failed += 1
+
+
+def remove_from_retry_queue(room_id: str) -> None:
+    """Remove a successfully corrected room from retry queue"""
+    if room_id in PENDING_RETRIES:
+        room_name = PENDING_RETRIES[room_id]["room_name"]
+        del PENDING_RETRIES[room_id]
+        logger.info("Removed room '%s' from retry queue after successful correction", room_name)
+
+
+def get_retry_interval(retry_count: int) -> int:
+    """Get retry interval based on retry count"""
+    if retry_count < len(RETRY_INTERVALS):
+        return RETRY_INTERVALS[retry_count]
+    # After max retries, keep trying at last interval
+    return RETRY_INTERVALS[-1]
+
+
+def process_retries() -> None:
+    """Process pending retries that are due"""
+    global total_retried, total_corrections
+    
+    if not PENDING_RETRIES:
+        return
+    
+    current_time = time.time()
+    rooms_to_remove = []
+    
+    for room_id, retry_data in PENDING_RETRIES.items():
+        failed_at = retry_data["failed_at"]
+        retry_count = retry_data["retry_count"]
+        retry_interval = get_retry_interval(retry_count)
+        time_since_failure = current_time - failed_at
+        
+        if time_since_failure >= retry_interval:
+            room_name = retry_data["room_name"]
+            sensor_temp = retry_data["sensor_temp"]
+            
+            logger.info(
+                "⟳ Retrying room '%s' (attempt %d, %.1f minutes since last failure)",
+                room_name, retry_count + 1, time_since_failure / 60
+            )
+            
+            total_retried += 1
+            if set_true_temperature(room_id, sensor_temp, room_name, is_retry=True):
+                rooms_to_remove.append(room_id)
+                total_corrections += 1
+            else:
+                # Update retry data for next attempt
+                PENDING_RETRIES[room_id]["retry_count"] += 1
+                PENDING_RETRIES[room_id]["failed_at"] = current_time
+                next_retry = get_retry_interval(PENDING_RETRIES[room_id]["retry_count"])
+                logger.warning(
+                    "Retry failed for room '%s', will retry again in %d minutes",
+                    room_name, next_retry // 60
+                )
+    
+    # Remove successfully corrected rooms
+    for room_id in rooms_to_remove:
+        remove_from_retry_queue(room_id)
 
 
 def check_and_correct_room(sensor_id: str, climate_id: str, room_id: str, room_name: str) -> None:
@@ -257,10 +350,18 @@ def check_and_correct_room(sensor_id: str, climate_id: str, room_id: str, room_n
             "⚠ Temperature delta %.1f°C exceeds threshold %.1f°C - correcting room '%s'",
             delta, TEMP_DELTA_THRESHOLD, room_name
         )
-        if set_true_temperature(room_id, sensor_temp):
+        if set_true_temperature(room_id, sensor_temp, room_name, is_retry=False):
             total_corrections += 1
+            # If this room was in retry queue, remove it
+            remove_from_retry_queue(room_id)
+        else:
+            # Add to retry queue
+            add_to_retry_queue(room_id, sensor_temp, room_name, sensor_id, climate_id)
     else:
         logger.debug("✓ Temperature delta within threshold - no correction needed for '%s'", room_name)
+        # If this room was in retry queue and delta is now acceptable, remove it
+        if room_id in PENDING_RETRIES:
+            remove_from_retry_queue(room_id)
 
 
 def run_check_cycle() -> None:
@@ -275,6 +376,12 @@ def run_check_cycle() -> None:
         return
     
     try:
+        # First, process any pending retries
+        if PENDING_RETRIES:
+            logger.info("Processing %d pending retries...", len(PENDING_RETRIES))
+            process_retries()
+        
+        # Then check all configured rooms
         for sensor_id, (climate_id, room_id, room_name) in ROOM_MAPPINGS.items():
             try:
                 check_and_correct_room(sensor_id, climate_id, room_id, room_name)
@@ -289,7 +396,10 @@ def run_check_cycle() -> None:
     finally:
         last_check_time = time.time()
     
-    logger.info("=== Check cycle completed ===")
+    if PENDING_RETRIES:
+        logger.info("=== Check cycle completed (%d rooms in retry queue) ===", len(PENDING_RETRIES))
+    else:
+        logger.info("=== Check cycle completed ===")
 
 
 @app.route('/health', methods=['GET'])
@@ -301,6 +411,19 @@ def health():
         "mapped_rooms": len(ROOM_MAPPINGS),
         "total_checks": total_checks,
         "total_corrections": total_corrections,
+        "total_failed": total_failed,
+        "total_retried": total_retried,
+        "pending_retries": len(PENDING_RETRIES),
+        "retry_queue": [
+            {
+                "room_id": room_id,
+                "room_name": data["room_name"],
+                "retry_count": data["retry_count"],
+                "minutes_since_failure": round((time.time() - data["failed_at"]) / 60, 1),
+                "next_retry_in_minutes": round((get_retry_interval(data["retry_count"]) - (time.time() - data["failed_at"])) / 60, 1)
+            }
+            for room_id, data in PENDING_RETRIES.items()
+        ],
         "last_check_time": last_check_time,
         "check_interval_seconds": CHECK_INTERVAL_SECONDS,
     }
