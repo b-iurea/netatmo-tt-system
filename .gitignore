@@ -1,4 +1,5 @@
 .venv
+**/.venv
 .vscode
 *.code-workspace
 **/*.ini
@@ -11,4 +12,3 @@
 tmp/**
 **/__pycache__ 
 src/netatmo_api/tmp/
-
