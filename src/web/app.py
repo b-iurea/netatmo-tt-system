@@ -131,7 +131,10 @@ def launch_fastapp(port=8000, host="0.0.0.0", settings=None):
         app.state.config = settings
     else:
         app.state.config = {}
-    uvicorn.run(app, host=host, port=port)
+    
+    # Use multiple workers to handle more concurrent connections
+    workers = int(os.getenv("UVICORN_WORKERS", "4"))
+    uvicorn.run(app, host=host, port=port, workers=workers)
 
 
 if __name__ == "__main__":

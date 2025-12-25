@@ -11,8 +11,10 @@ import os
 import sys
 import time
 import logging
+import threading
 from typing import Dict, Any, Optional, List
 import requests
+from flask import Flask, jsonify
 
 # Configuration from environment variables
 HOMEASSISTANT_URL = os.getenv("HOMEASSISTANT_URL", "http://192.168.1.102:8123")
@@ -21,6 +23,7 @@ NETATMO_API_URL = os.getenv("NETATMO_API_URL", "http://netatmo-tt-system-netatmo
 TEMP_DELTA_THRESHOLD = float(os.getenv("TEMP_DELTA_THRESHOLD", "0.8"))
 CHECK_INTERVAL_SECONDS = int(os.getenv("CHECK_INTERVAL_SECONDS", "300"))  # 5 minutes
 REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "10"))
+FLASK_PORT = int(os.getenv("FLASK_PORT", "8080"))
 
 # Room name mappings: room_name_lowercase -> (sensor_entity_id, climate_entity_id)
 # Maps Netatmo room names to Home Assistant entities
@@ -39,8 +42,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger("temperature-corrector")
 
+# Flask app
+app = Flask(__name__)
+
+# Silence Werkzeug access logs (health/liveness probes flood the logs at INFO level)
+try:
+    logging.getLogger("werkzeug").setLevel(logging.WARNING)
+except Exception:
+    pass
+
 # Global room mappings: sensor_id -> (climate_id, room_id, room_name)
 ROOM_MAPPINGS: Dict[str, tuple] = {}
+
+# Health status tracking
+last_check_time = None
+last_check_success = False
+total_checks = 0
+total_corrections = 0
 
 
 def fetch_homestatus() -> Dict[str, Any]:
@@ -234,35 +252,65 @@ def check_and_correct_room(sensor_id: str, climate_id: str, room_id: str, room_n
     
     # Check if correction is needed
     if delta > TEMP_DELTA_THRESHOLD:
+        global total_corrections
         logger.warning(
             "⚠ Temperature delta %.1f°C exceeds threshold %.1f°C - correcting room '%s'",
             delta, TEMP_DELTA_THRESHOLD, room_name
         )
-        set_true_temperature(room_id, sensor_temp)
+        if set_true_temperature(room_id, sensor_temp):
+            total_corrections += 1
     else:
         logger.debug("✓ Temperature delta within threshold - no correction needed for '%s'", room_name)
 
 
 def run_check_cycle() -> None:
     """Run one check cycle for all configured rooms"""
+    global last_check_time, last_check_success, total_checks
+    
     logger.info("=== Starting temperature check cycle ===")
     
     if not ROOM_MAPPINGS:
         logger.error("No room mappings configured - cannot perform checks")
+        last_check_success = False
         return
     
-    for sensor_id, (climate_id, room_id, room_name) in ROOM_MAPPINGS.items():
-        try:
-            check_and_correct_room(sensor_id, climate_id, room_id, room_name)
-        except Exception as e:
-            logger.exception("Error checking room '%s' (sensor=%s): %s", room_name, sensor_id, e)
+    try:
+        for sensor_id, (climate_id, room_id, room_name) in ROOM_MAPPINGS.items():
+            try:
+                check_and_correct_room(sensor_id, climate_id, room_id, room_name)
+            except Exception as e:
+                logger.exception("Error checking room '%s' (sensor=%s): %s", room_name, sensor_id, e)
+        
+        last_check_success = True
+        total_checks += 1
+    except Exception as e:
+        logger.exception("Error in check cycle: %s", e)
+        last_check_success = False
+    finally:
+        last_check_time = time.time()
     
     logger.info("=== Check cycle completed ===")
 
 
-def main():
-    """Main loop"""
-    logger.info("Temperature Corrector starting...")
+@app.route('/health', methods=['GET'])
+def health():
+    """Health check endpoint"""
+    status = {
+        "status": "healthy" if last_check_success else "unhealthy",
+        "service": "temperature-corrector",
+        "mapped_rooms": len(ROOM_MAPPINGS),
+        "total_checks": total_checks,
+        "total_corrections": total_corrections,
+        "last_check_time": last_check_time,
+        "check_interval_seconds": CHECK_INTERVAL_SECONDS,
+    }
+    
+    return jsonify(status), 200 if last_check_success else 503
+
+
+def run_check_loop():
+    """Run the temperature check loop in a separate thread"""
+    logger.info("Temperature Corrector check loop starting...")
     logger.info("Home Assistant URL: %s", HOMEASSISTANT_URL)
     logger.info("Netatmo API URL: %s", NETATMO_API_URL)
     logger.info("Temperature delta threshold: %.1f°C", TEMP_DELTA_THRESHOLD)
@@ -288,6 +336,35 @@ def main():
         # Wait for next cycle
         logger.debug("Sleeping for %d seconds until next check", CHECK_INTERVAL_SECONDS)
         time.sleep(CHECK_INTERVAL_SECONDS)
+
+
+def main():
+    """Main entry point"""
+    logger.info("Temperature Corrector starting...")
+    logger.info("Home Assistant URL: %s", HOMEASSISTANT_URL)
+    logger.info("Netatmo API URL: %s", NETATMO_API_URL)
+    logger.info("Temperature delta threshold: %.1f°C", TEMP_DELTA_THRESHOLD)
+    logger.info("Check interval: %d seconds", CHECK_INTERVAL_SECONDS)
+    logger.info("Flask port: %d", FLASK_PORT)
+    
+    if not HOMEASSISTANT_TOKEN:
+        logger.warning("HOMEASSISTANT_TOKEN not set - Home Assistant authentication may fail")
+    
+    # Build room mappings from Netatmo API
+    if not build_room_mappings():
+        logger.error("Failed to build room mappings - exiting")
+        sys.exit(1)
+    
+    logger.info("Configured rooms: %d", len(ROOM_MAPPINGS))
+    
+    # Start check loop in separate thread
+    check_thread = threading.Thread(target=run_check_loop, daemon=True)
+    check_thread.start()
+    logger.info("Check loop thread started")
+    
+    # Start Flask app
+    logger.info("Starting Flask server on port %d", FLASK_PORT)
+    app.run(host='0.0.0.0', port=FLASK_PORT, debug=False)
 
 
 if __name__ == "__main__":
