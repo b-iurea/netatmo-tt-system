@@ -131,7 +131,11 @@ def launch_fastapp(port=8000, host="0.0.0.0", settings=None):
         app.state.config = settings
     else:
         app.state.config = {}
-    uvicorn.run(app, host=host, port=port)
+    
+    # Note: Cannot use multiple workers with app.state sharing
+    # Each worker process has its own isolated state, causing 404 errors
+    # when accessing endpoints that depend on app.state.config
+    uvicorn.run(app, host=host, port=port, workers=1)
 
 
 if __name__ == "__main__":
