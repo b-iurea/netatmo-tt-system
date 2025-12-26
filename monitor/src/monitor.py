@@ -258,13 +258,17 @@ def start_monitor_if_needed(room_id: str, initial_temp: float) -> None:
                     delta = None
                 logger.info("monitor_step: room=%s temp_delta=%s (threshold=%s)", room_id, delta, TEMP_DELTA)
                 if cur_temp is not None and (delta is not None and delta >= TEMP_DELTA):
-                    # success: temperature increased enough -> stop monitoring
-                    logger.info("monitor success: room=%s temp rose by %s >= %s", room_id, float(cur_temp) - float(m["initial_temp"]), TEMP_DELTA)
-                    STATE["monitors"].pop(room_id, None)
-                    try:
-                        scheduler.remove_job(job_id)
-                    except Exception:
-                        pass
+                    # success: temperature increased enough -> stop ALL monitors
+                    logger.info("monitor success: room=%s temp rose by %s >= %s -> stopping all monitors", room_id, float(cur_temp) - float(m["initial_temp"]), TEMP_DELTA)
+                    # Stop all active monitors (heating is working, no need to monitor other rooms)
+                    for monitored_room_id in list(STATE["monitors"].keys()):
+                        monitored_job_id = f"monitor_{monitored_room_id}"
+                        try:
+                            scheduler.remove_job(monitored_job_id)
+                            logger.info("monitor success cascade: stopped monitor for room=%s", monitored_room_id)
+                        except Exception:
+                            pass
+                    STATE["monitors"].clear()
                     return
 
             # if reached max attempts -> take action

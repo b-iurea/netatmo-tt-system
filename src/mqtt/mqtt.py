@@ -25,16 +25,34 @@ class MQTT():
 
     def __init__(self, broker=None, port=None, topic=None):
         logger.info("Init")
-        if broker != None:
+        # Allow configuration from constructor or environment variables
+        if broker is None:
+            broker = os.environ.get("NETATMO_MQTT_BROKER", self.broker)
+        if port is None:
+            port = os.environ.get("NETATMO_MQTT_PORT", self.port)
+        if topic is None:
+            topic = os.environ.get("NETATMO_MQTT_TOPIC", self.topic)
+
+        if broker is not None:
             self.broker = broker
-        if port != None:
-            self.port = int(port)
-        if topic != None:
+        if port is not None:
+            try:
+                self.port = int(port)
+            except Exception:
+                logger.warning("Invalid MQTT_PORT '%s', using default %s", port, self.port)
+        if topic is not None:
             self.topic = topic
-        pass
+
+        # optional auth
+        self.username = os.environ.get("MQTT_USER")
+        self.password = os.environ.get("MQTT_PASS")
+        self.keepalive = int(os.environ.get("MQTT_KEEPALIVE", 60))
+        self.tls = os.environ.get("MQTT_TLS", "false").lower() in ("1", "true", "yes")
+        # Log the resolved configuration so we can debug env vs defaults
+        logger.info("MQTT resolved config: broker=%s port=%s topic=%s tls=%s", self.broker, self.port, self.topic, self.tls)
 
     def send_message(self, payload, topic=None, item=None, mode="state"):
-        if self.client == None:
+        if self.client is None:
             self.__connect_queue()
         if topic == None:
             topic = self.topic
@@ -46,7 +64,17 @@ class MQTT():
             topic = f"{topic}/{item}/{mode}"
         else:
             topic = f"{topic}/{mode}"
-        self.client.publish(topic, message)
+        try:
+            rc = self.client.publish(topic, message)
+            logger.debug("Published to %s rc=%s", topic, rc)
+        except Exception as e:
+            logger.error("Failed to publish to MQTT broker %s:%s - %s", self.broker, self.port, e)
+            # Try reconnect once
+            try:
+                self.__connect_queue()
+                self.client.publish(topic, message)
+            except Exception as e2:
+                logger.error("Publish retry failed: %s", e2)
         pass
 
     def mqtt_on_message(self, client, userdata, message):
@@ -63,7 +91,7 @@ class MQTT():
             try:
                 self.client.reconnect()
             except Exception as e:
-                logger.error(f"Error trying to reconnect to mqtt. Exception " + str(e))
+                logger.error("Error trying to reconnect to mqtt. Exception %s", e)
 
     def subscribe_topic(self, topic=None, qos=1, on_message=None):
         if self.client == None:
@@ -77,11 +105,55 @@ class MQTT():
         else:
             self.client.on_message=on_message
         self.on_disconnect=self.on_disconnect
-        self.client.loop_forever()
+        # Use loop_forever when subscribing in foreground, but ensure callbacks are set
+        try:
+            self.client.loop_forever()
+        except KeyboardInterrupt:
+            logger.info("MQTT subscribe loop interrupted by user")
+        except Exception as e:
+            logger.error("MQTT loop_forever error: %s", e)
 
     def __connect_queue(self):
         paho_client = "mqtt_netatmo_" + str(time.time())
         client = paho.Client(client_id=paho_client, callback_api_version=1)
-        client.connect(self.broker, self.port)
-        self.client = client
+
+        # set auth if provided
+        if getattr(self, 'username', None):
+            client.username_pw_set(self.username, self.password)
+
+        # TLS not currently configured beyond flag; user can extend if needed
+        if getattr(self, 'tls', False):
+            try:
+                client.tls_set()
+            except Exception as e:
+                logger.warning("Failed to enable TLS on mqtt client: %s", e)
+
+        # register callbacks
+        client.on_disconnect = self.on_disconnect
+        client.on_message = self.mqtt_on_message
+
+        max_attempts = 5
+        attempt = 0
+        while attempt < max_attempts:
+            attempt += 1
+            try:
+                logger.info("Connecting to MQTT broker %s:%s (attempt %s/%s)", self.broker, self.port, attempt, max_attempts)
+                client.connect(self.broker, self.port, keepalive=getattr(self, 'keepalive', 60))
+                # start network loop in background
+                client.loop_start()
+                self.client = client
+                logger.info("Connected to MQTT broker %s:%s", self.broker, self.port)
+                return
+            except Exception as e:
+                logger.error("MQTT connect attempt %s failed: %s", attempt, e)
+                # If last attempt, raise
+                if attempt >= max_attempts:
+                    logger.critical("Could not connect to MQTT broker after %s attempts", max_attempts)
+                    raise
+                # exponential backoff with jitter
+                backoff = min(2 ** attempt, 30)
+                jitter = backoff * 0.1
+                sleep_time = backoff + (jitter * (0.5 - time.time() % 1))
+                logger.info("Retrying MQTT connect in %.1f seconds", sleep_time)
+                time.sleep(sleep_time)
         
