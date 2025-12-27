@@ -35,6 +35,11 @@ POLL_INTERVAL_SECONDS = int(float(os.getenv("POLL_INTERVAL_SECONDS", "150")))
 VALVE_MODULE_TYPES = [t.strip().upper() for t in os.getenv("VALVE_MODULE_TYPES", "NRV,VALVE").split(",") if t.strip()]
 # Keys to inspect on a valve module to determine activity (comma-separated)
 VALVE_ACTIVE_KEYS = [k.strip() for k in os.getenv("VALVE_ACTIVE_KEYS", "valve_position,valve,position,open,heating_power_request,valve_level").split(",") if k.strip()]
+# Auto-recovery configuration
+RECOVERY_ENABLED = os.getenv("RECOVERY_ENABLED", "true").lower() in ("true", "1", "yes")
+RECOVERY_INITIAL_DELAY_MIN = int(os.getenv("RECOVERY_INITIAL_DELAY_MIN", "120"))  # 2 hours
+RECOVERY_MAX_ATTEMPTS = int(os.getenv("RECOVERY_MAX_ATTEMPTS", "3"))
+RECOVERY_BACKOFF_MULTIPLIER = float(os.getenv("RECOVERY_BACKOFF_MULTIPLIER", "2.0"))
 
 _session = requests.Session()
 
@@ -42,6 +47,7 @@ _session = requests.Session()
 STATE: Dict[str, Any] = {
     "rooms_map": {},  # room_id -> {module_ids: []}
     "monitors": {},  # room_id -> monitor state
+    "recovery_attempts": {},  # room_id -> {attempts: int, last_away_at: str}
 }
 
 scheduler = BackgroundScheduler()
@@ -60,7 +66,7 @@ if not logger.handlers:
     h.setFormatter(fmt)
     logger.addHandler(h)
 
-logger.info("monitor starting: SOURCE_BASE_URL=%s CHECK_INTERVAL_MIN=%s CHECK_ROUNDS=%s TEMP_DELTA=%s MAX_RETRIES=%s RETRY_BACKOFF=%s", SOURCE_BASE_URL, CHECK_INTERVAL_MIN, CHECK_ROUNDS, TEMP_DELTA, MAX_RETRIES, RETRY_BACKOFF)
+logger.info("monitor starting: SOURCE_BASE_URL=%s CHECK_INTERVAL_MIN=%s CHECK_ROUNDS=%s TEMP_DELTA=%s MAX_RETRIES=%s RETRY_BACKOFF=%s RECOVERY_ENABLED=%s RECOVERY_INITIAL_DELAY_MIN=%s RECOVERY_MAX_ATTEMPTS=%s", SOURCE_BASE_URL, CHECK_INTERVAL_MIN, CHECK_ROUNDS, TEMP_DELTA, MAX_RETRIES, RETRY_BACKOFF, RECOVERY_ENABLED, RECOVERY_INITIAL_DELAY_MIN, RECOVERY_MAX_ATTEMPTS)
 
 # Simple deduplicating logger helper to avoid repeating identical info messages
 LAST_LOGS: Dict[str, float] = {}
@@ -161,6 +167,68 @@ def fetch_homesdata() -> Dict[str, Any]:
     except Exception:
         logger.exception("fetch_homesdata: error summarizing payload")
     return data
+
+
+def schedule_recovery(room_id: str) -> None:
+    """
+    Schedule automatic recovery: after a delay, switch back to 'schedule' mode.
+    Uses exponential backoff based on previous attempts.
+    """
+    if not RECOVERY_ENABLED:
+        logger.info("schedule_recovery: disabled by config for room=%s", room_id)
+        return
+    
+    # Get or initialize recovery tracking
+    recovery_info = STATE["recovery_attempts"].get(room_id, {"attempts": 0})
+    attempts = recovery_info.get("attempts", 0)
+    
+    if attempts >= RECOVERY_MAX_ATTEMPTS:
+        logger.warning("schedule_recovery: room=%s reached max attempts (%s), giving up", room_id, RECOVERY_MAX_ATTEMPTS)
+        return
+    
+    # Calculate delay with exponential backoff
+    delay_minutes = RECOVERY_INITIAL_DELAY_MIN * (RECOVERY_BACKOFF_MULTIPLIER ** attempts)
+    next_attempt = attempts + 1
+    
+    # Update state
+    STATE["recovery_attempts"][room_id] = {
+        "attempts": next_attempt,
+        "last_away_at": _now_iso(),
+        "next_recovery_at": (datetime.now(timezone.utc) + timedelta(minutes=delay_minutes)).isoformat(),
+    }
+    
+    logger.info("schedule_recovery: room=%s attempt=%s/%s delay=%.1f minutes", room_id, next_attempt, RECOVERY_MAX_ATTEMPTS, delay_minutes)
+    
+    def recovery_action():
+        try:
+            logger.info("recovery_action: attempting to restore schedule mode for room=%s (attempt %s/%s)", room_id, next_attempt, RECOVERY_MAX_ATTEMPTS)
+            url = f"{SOURCE_BASE_URL}/setthermode?mode=schedule"
+            headers = {"accept": "application/json"}
+            resp = _make_request_with_retry("PUT", url, headers=headers, timeout=REQUEST_TIMEOUT)
+            logger.info("recovery_action: PUT setthermode?mode=schedule response status=%s for room=%s", resp.status_code, room_id)
+            
+            if resp.status_code == 200:
+                logger.info("recovery_action: successfully restored schedule mode for room=%s", room_id)
+                # Reset attempts counter on success
+                if room_id in STATE["recovery_attempts"]:
+                    STATE["recovery_attempts"][room_id]["attempts"] = 0
+                    STATE["recovery_attempts"][room_id]["last_success_at"] = _now_iso()
+            else:
+                logger.warning("recovery_action: failed to restore schedule mode for room=%s (status=%s)", room_id, resp.status_code)
+        except (ConnectionError, Timeout) as e:
+            logger.error("recovery_action: connection failed for room=%s: %s", room_id, str(e)[:150])
+        except Exception as e:
+            logger.exception("recovery_action: unexpected error for room=%s: %s", room_id, e)
+    
+    # Schedule the recovery job
+    job_id = f"recovery_{room_id}_{next_attempt}"
+    next_run = datetime.now(timezone.utc) + timedelta(minutes=delay_minutes)
+    
+    try:
+        scheduler.add_job(recovery_action, "date", run_date=next_run, id=job_id)
+        logger.info("schedule_recovery: scheduled job %s for room=%s at %s", job_id, room_id, next_run.isoformat())
+    except Exception as e:
+        logger.exception("schedule_recovery: failed to schedule job for room=%s: %s", room_id, e)
 
 
 def fetch_homestatus() -> Dict[str, Any]:
@@ -265,7 +333,7 @@ def start_monitor_if_needed(room_id: str, initial_temp: float) -> None:
                     delta = None
                 logger.info("monitor_step: room=%s temp_delta=%s (threshold=%s)", room_id, delta, TEMP_DELTA)
                 if cur_temp is not None and (delta is not None and delta >= TEMP_DELTA):
-                    # success: temperature increased enough -> stop ALL monitors
+                    # success: temperature increased enough -> stop ALL monitors and reset recovery attempts
                     logger.info("monitor success: room=%s temp rose by %s >= %s -> stopping all monitors", room_id, float(cur_temp) - float(m["initial_temp"]), TEMP_DELTA)
                     # Stop all active monitors (heating is working, no need to monitor other rooms)
                     for monitored_room_id in list(STATE["monitors"].keys()):
@@ -275,6 +343,11 @@ def start_monitor_if_needed(room_id: str, initial_temp: float) -> None:
                             logger.info("monitor success cascade: stopped monitor for room=%s", monitored_room_id)
                         except Exception:
                             pass
+                        # Reset recovery attempts on success
+                        if monitored_room_id in STATE["recovery_attempts"]:
+                            STATE["recovery_attempts"][monitored_room_id]["attempts"] = 0
+                            STATE["recovery_attempts"][monitored_room_id]["last_success_at"] = _now_iso()
+                            logger.info("monitor success cascade: reset recovery attempts for room=%s", monitored_room_id)
                     STATE["monitors"].clear()
                     return
 
@@ -292,6 +365,10 @@ def start_monitor_if_needed(room_id: str, initial_temp: float) -> None:
                     logger.warning("monitor action: room=%s reached attempts=%s -> PUT %s", room_id, m["attempts"], url)
                     resp = _make_request_with_retry("PUT", url, headers=headers, timeout=REQUEST_TIMEOUT)
                     logger.info("PUT setthermode response: status=%s text=%s", resp.status_code, (resp.text or "")[:200])
+                    
+                    # Schedule auto-recovery after switching to away mode
+                    if resp.status_code == 200:
+                        schedule_recovery(room_id)
                 except (ConnectionError, Timeout) as e:
                     logger.error("setthermode connection failed after retries for room=%s: %s", room_id, str(e)[:150])
                 except Exception as e:
@@ -457,10 +534,15 @@ def status():
             "CHECK_INTERVAL_MIN": CHECK_INTERVAL_MIN,
             "CHECK_ROUNDS": CHECK_ROUNDS,
             "TEMP_DELTA": TEMP_DELTA,
+            "RECOVERY_ENABLED": RECOVERY_ENABLED,
+            "RECOVERY_INITIAL_DELAY_MIN": RECOVERY_INITIAL_DELAY_MIN,
+            "RECOVERY_MAX_ATTEMPTS": RECOVERY_MAX_ATTEMPTS,
+            "RECOVERY_BACKOFF_MULTIPLIER": RECOVERY_BACKOFF_MULTIPLIER,
         },
         "state": {
             "rooms_map": STATE["rooms_map"],
             "monitors": STATE["monitors"],
+            "recovery_attempts": STATE["recovery_attempts"],
         },
     }), 200
 
