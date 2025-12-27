@@ -24,6 +24,8 @@ TEMP_DELTA_THRESHOLD = float(os.getenv("TEMP_DELTA_THRESHOLD", "0.8"))
 CHECK_INTERVAL_SECONDS = int(os.getenv("CHECK_INTERVAL_SECONDS", "300"))  # 5 minutes
 REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "10"))
 FLASK_PORT = int(os.getenv("FLASK_PORT", "8080"))
+VERIFICATION_DELAY_SECONDS = int(os.getenv("VERIFICATION_DELAY_SECONDS", "15"))  # Wait before verification
+MAX_VERIFICATION_ATTEMPTS = int(os.getenv("MAX_VERIFICATION_ATTEMPTS", "3"))  # Number of verification attempts
 
 # Room name mappings: room_name_lowercase -> (sensor_entity_id, climate_entity_id)
 # Maps Netatmo room names to Home Assistant entities
@@ -216,6 +218,58 @@ def get_temperature(entity_id: str, is_climate: bool = False) -> Optional[float]
         return None
 
 
+def verify_temperature_correction(room_id: str, expected_temp: float, room_name: str) -> bool:
+    """Verify that temperature correction was applied by reading homestatus
+    
+    Args:
+        room_id: Netatmo room ID
+        expected_temp: Expected corrected temperature
+        room_name: Room name for logging
+    
+    Returns:
+        True if correction was verified, False otherwise
+    """
+    try:
+        homestatus_data = fetch_homestatus()
+        if not homestatus_data:
+            logger.warning("Could not fetch homestatus for verification")
+            return False
+        
+        rooms = homestatus_data.get("body", {}).get("home", {}).get("rooms", [])
+        
+        for room in rooms:
+            if str(room.get("id")) == str(room_id):
+                # Check if therm_measured_temperature was updated
+                measured_temp = room.get("therm_measured_temperature")
+                
+                if measured_temp is None:
+                    logger.warning("Room '%s': no therm_measured_temperature in homestatus", room_name)
+                    return False
+                
+                # Allow small tolerance (0.1°C) for float comparison
+                temp_diff = abs(measured_temp - expected_temp)
+                
+                if temp_diff <= 0.1:
+                    logger.info(
+                        "✓ VERIFIED: Room '%s' temperature corrected to %.1f°C (measured: %.1f°C)",
+                        room_name, expected_temp, measured_temp
+                    )
+                    return True
+                else:
+                    logger.warning(
+                        "✗ VERIFICATION FAILED: Room '%s' expected %.1f°C but got %.1f°C (diff: %.1f°C)",
+                        room_name, expected_temp, measured_temp, temp_diff
+                    )
+                    return False
+        
+        logger.warning("Room '%s' (id=%s) not found in homestatus", room_name, room_id)
+        return False
+        
+    except Exception as e:
+        logger.error("Error verifying temperature for room '%s': %s", room_name, e)
+        return False
+
+
 def set_true_temperature(room_id: str, corrected_temperature: float, room_name: str = "", is_retry: bool = False) -> bool:
     """Send corrected temperature to Netatmo API"""
     url = f"{NETATMO_API_URL}/truetemperature/{room_id}"
@@ -223,14 +277,75 @@ def set_true_temperature(room_id: str, corrected_temperature: float, room_name: 
     headers = {"accept": "application/json"}
     
     retry_info = f" (retry)" if is_retry else ""
+    full_url = f"{url}?corrected_temperature={corrected_temperature}"
+    
     try:
-        logger.info("Setting true temperature for room %s%s to %.1f°C", room_id, retry_info, corrected_temperature)
+        logger.info(
+            "Setting true temperature for room '%s' (id=%s)%s to %.1f°C",
+            room_name, room_id, retry_info, corrected_temperature
+        )
+        logger.info("Full request: PUT %s", full_url)
+        
         response = requests.put(url, params=params, headers=headers, timeout=REQUEST_TIMEOUT)
+        
+        # Log response details
+        logger.info("Response status: %s", response.status_code)
+        logger.debug("Response headers: %s", dict(response.headers))
+        
         response.raise_for_status()
-        logger.info("✓ Successfully set true temperature%s: status=%s", retry_info, response.status_code)
-        return True
+        
+        # Try to parse and log response body
+        try:
+            response_data = response.json()
+            logger.info("Response body (JSON): %s", response_data)
+            
+            # Check if response indicates success or failure
+            if isinstance(response_data, dict):
+                if response_data.get("status") == "ok" or "body" in response_data:
+                    logger.info("✓ API returned success indicator")
+                elif response_data.get("status") == "failed":
+                    logger.warning("⚠ API returned 'failed' status in response!")
+                    return False
+        except ValueError:
+            # Not JSON, log as text
+            logger.info("Response body (text): %s", response.text[:500])
+        
+        logger.info("✓ API call successful%s - now verifying...", retry_info)
+        
+        # Wait before verification to give API time to process
+        logger.info("Waiting %d seconds before verification...", VERIFICATION_DELAY_SECONDS)
+        time.sleep(VERIFICATION_DELAY_SECONDS)
+        
+        # Verify the temperature was actually set (with retries)
+        for attempt in range(1, MAX_VERIFICATION_ATTEMPTS + 1):
+            logger.info("Verification attempt %d/%d for room '%s'", attempt, MAX_VERIFICATION_ATTEMPTS, room_name)
+            
+            if verify_temperature_correction(room_id, corrected_temperature, room_name):
+                return True
+            
+            if attempt < MAX_VERIFICATION_ATTEMPTS:
+                logger.warning("Verification failed, waiting 10 seconds before retry...")
+                time.sleep(10)
+        
+        # All verification attempts failed
+        logger.error(
+            "✗ Temperature correction NOT VERIFIED after %d attempts for room '%s'",
+            MAX_VERIFICATION_ATTEMPTS, room_name
+        )
+        return False
+        
     except requests.exceptions.RequestException as e:
-        logger.error("Failed to set true temperature for room %s%s: %s", room_id, retry_info, str(e)[:200])
+        logger.error(
+            "Failed to set true temperature for room '%s' (id=%s)%s: %s",
+            room_name, room_id, retry_info, str(e)
+        )
+        # Try to log response content if available
+        try:
+            if hasattr(e, 'response') and e.response is not None:
+                logger.error("Error response status: %s", e.response.status_code)
+                logger.error("Error response body: %s", e.response.text[:500])
+        except Exception:
+            pass
         return False
 
 
