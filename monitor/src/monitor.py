@@ -231,6 +231,13 @@ def start_monitor_if_needed(room_id: str, initial_temp: float) -> None:
             logger.debug("monitor_step: room=%s attempt=%s", room_id, m.get("attempts"))
             logger.debug("monitor_step: monitor state=%s", m)
             homestatus = fetch_homestatus()
+            
+            # Check again after fetch - another monitor may have succeeded and cleared everything
+            if room_id not in STATE["monitors"]:
+                logger.debug("monitor_step: room=%s monitor was removed during fetch, aborting", room_id)
+                return
+            m = STATE["monitors"][room_id]
+            
             rooms = homestatus.get("body", {}).get("home", {}).get("rooms", [])
             modules = homestatus.get("body", {}).get("home", {}).get("modules", [])
             modules_map = {mm.get("id"): mm for mm in modules}
@@ -271,6 +278,11 @@ def start_monitor_if_needed(room_id: str, initial_temp: float) -> None:
                     STATE["monitors"].clear()
                     return
 
+            # Check again before taking action - another monitor may have succeeded
+            if room_id not in STATE["monitors"]:
+                logger.debug("monitor_step: room=%s monitor was removed before action, aborting", room_id)
+                return
+            
             # if reached max attempts -> take action
             if m["attempts"] >= CHECK_ROUNDS:
                 # perform PUT to setthermode?mode=away
